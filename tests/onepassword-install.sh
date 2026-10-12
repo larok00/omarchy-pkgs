@@ -10,6 +10,7 @@ declare -A owners=()
 group_creations=0
 fail_groupadd=false
 fail_chgrp=false
+fail_browser_chmod=false
 
 getent() {
   [[ $1 == group && -v groups[$2] ]] || return 2
@@ -36,6 +37,9 @@ chgrp() {
 
 chmod() {
   [[ $1 == g+s ]]
+  if [[ $2 == /opt/1Password/1Password-BrowserSupport && $fail_browser_chmod == true ]]; then
+    return 1
+  fi
   case $2 in
     /opt/1Password/1Password-BrowserSupport|/opt/1Password/1password-mcp)
       command chmod "$1" "$TEST_ROOT/${2##*/}"
@@ -102,3 +106,33 @@ if setup_mcp_helper; then
 fi
 [[ $(stat -c %a "$TEST_ROOT/1password-mcp") == 755 ]]
 echo 'PASS: setup failures do not enable setgid on the wrong group'
+
+# Each post hook must configure MCP even when the browser helper fails.
+fail_chgrp=false
+for hook in post_install post_upgrade; do
+  groups[onepassword]=1
+  unset 'groups[onepassword-mcp]'
+  reset_modes
+  fail_browser_chmod=true
+  if "$hook"; then
+    echo "FAIL: $hook ignored browser helper failure" >&2
+    exit 1
+  fi
+  [[ ${owners[/opt/1Password/1password-mcp]} == onepassword-mcp ]]
+  [[ $(stat -c %a "$TEST_ROOT/1password-mcp") == 2755 ]]
+  [[ $(stat -c %a "$TEST_ROOT/1Password-BrowserSupport") == 755 ]]
+  echo "PASS: $hook configures MCP despite browser helper failure"
+
+  reset_modes
+  fail_browser_chmod=false
+  unset 'groups[onepassword-mcp]'
+  fail_groupadd=true
+  if "$hook"; then
+    echo "FAIL: $hook ignored MCP helper failure" >&2
+    exit 1
+  fi
+  [[ $(stat -c %a "$TEST_ROOT/1Password-BrowserSupport") == 2755 ]]
+  [[ $(stat -c %a "$TEST_ROOT/1password-mcp") == 755 ]]
+  fail_groupadd=false
+  echo "PASS: $hook reports MCP failure after configuring browser helper"
+done
